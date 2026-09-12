@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>铸钟内壁车削调音方案系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>铸钟内壁车削调音方案系统</h1>
+  <div class="bar">
+    <label>钟体 <select id="bellSel"></select></label>
+    <button id="btnNew">新建钟体</button>
+    <button id="btnDemo">载入演示钟</button>
+    <span id="msg"></span>
+  </div>
+</header>
+
+<main>
+  <!-- 左栏：录入 -->
+  <section class="col" id="colSetup">
+    <h2>① 钟体与目标</h2>
+    <div class="grid2">
+      <label>名称 <input id="fName"></label>
+      <label>密度 kg/m³ <input id="fDensity" type="number" value="8800"></label>
+      <label>A4 基准 Hz <input id="fA4" type="number" value="440" step="0.5"></label>
+      <label>目标音高 <input id="fPitch" placeholder="如 E4"></label>
+      <label>单刀深度 mm <input id="fPass" type="number" value="1.0" step="0.1"></label>
+      <label>车床步进 mm <input id="fStep" type="number" value="0.1" step="0.05"></label>
+      <label>最小壁厚 mm <input id="fMinTh" type="number" value="8.0" step="0.5"></label>
+      <label>&nbsp;<button id="btnGenTargets">按音高生成五分音目标</button></label>
+    </div>
+    <h3>母线截面（每行：z唇口向上mm, 内半径mm, 壁厚mm）</h3>
+    <textarea id="fProfile" rows="8" spellcheck="false"
+      placeholder="0,330,40&#10;20,322,42&#10;..."></textarea>
+    <h3>五个分音目标频率 / 容差(音分)</h3>
+    <table id="tblTargets" class="mini"></table>
+    <button id="btnSaveSetup" class="primary">保存钟体设置</button>
+
+    <h2>② 敲击测量导入</h2>
+    <label>轮次标签 <input id="mTag" value="as-found"></label>
+    <textarea id="mRows" rows="4" spellcheck="false"
+      placeholder="hum,168.20,0.8&#10;prime,331.05,0.85&#10;...（分音,频率Hz,置信度0~1）"></textarea>
+    <button id="btnImport">导入测量</button>
+    <div id="measList"></div>
+  </section>
+
+  <!-- 中栏：SVG 截面与圈选 -->
+  <section class="col wide" id="colProfile">
+    <h2>③ 截面圈选与切削预览</h2>
+    <div class="hint">点击环带选中（Shift 连选区间）；滑块或滚轮调整选中环带去料深度；红色=已选切削，灰色=禁止切削区（壁厚不足）。</div>
+    <svg id="svgBell" viewBox="0 0 460 640"></svg>
+    <div class="grid2">
+      <label>选中环带去料 mm
+        <input id="depthSlider" type="range" min="0" max="6" step="0.1" value="0">
+        <span id="depthVal">0.0</span></label>
+      <label>统一清零 <button id="btnClear">清除全部去料</button></label>
+    </div>
+    <div id="alerts"></div>
+    <h3>灵敏度矩阵（每 mm 去料的相对频变，红=降 蓝=升）</h3>
+    <svg id="svgHeat" viewBox="0 0 460 150"></svg>
+  </section>
+
+  <!-- 右栏：分析与方案 -->
+  <section class="col" id="colPlan">
+    <h2>④ 目标偏差与预测可信度</h2>
+    <table id="tblDev" class="mini"></table>
+    <h3>即时预览（五个分音）</h3>
+    <table id="tblPrev" class="mini"></table>
+    <button id="btnReach">可达性分析（仅靠去料）</button>
+    <div id="reachOut"></div>
+
+    <h2>⑤ 方案版本与轮次</h2>
+    <div class="bar">
+      <input id="planName" placeholder="方案名称">
+      <button id="btnSavePlan" class="primary">保存为新版本</button>
+    </div>
+    <div id="planList"></div>
+    <div class="bar">
+      <button id="btnGenRounds">拆分轮次+复测节点</button>
+      <a id="lnkSvg" href="#" target="_blank">导出SVG工艺单</a>
+      <a id="lnkJson" href="#" target="_blank">导出JSON</a>
+    </div>
+    <div id="roundList"></div>
+
+    <h3>版本比较</h3>
+    <div class="bar">
+      <select id="cmpA"></select><select id="cmpB"></select>
+      <button id="btnCmp">比较</button>
+    </div>
+    <div id="cmpOut"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

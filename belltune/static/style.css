@@ -38,6 +38,7 @@ table.mini td:first-child, table.mini th:first-child { text-align: left; }
 #alerts div { font-size: 11px; padding: 4px 8px; border-radius: 4px; margin: 3px 0; }
 #alerts .err { background: #fbe3e3; border: 1px solid #e0a0a0; }
 #alerts .wrn { background: #fdf3dc; border: 1px solid #e0c88a; }
+#alerts .info { background: #e8f0fa; border: 1px solid #a8c4e0; }
 .round { border: 1px solid #ddd5c4; border-radius: 6px; padding: 6px 8px;
        margin: 5px 0; font-size: 11px; }
 .round.cut { background: #fdf6ec; } .round.meas { background: #eef6ff; }

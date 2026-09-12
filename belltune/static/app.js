@@ -274,7 +274,8 @@ function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeo
 
 async function refreshPreview() {
   if (!state.model) return;
-  const r = await api(`/api/bells/${state.bellId}/preview`, "POST", { depths: state.depths });
+  const r = await api(`/api/bells/${state.bellId}/preview`, "POST",
+                      { depths: state.depths, plan_id: state.planId });
   $("tblPrev").innerHTML =
     "<tr><th>分音</th><th>预测Hz</th><th>偏差(音分)</th><th>状态</th></tr>" +
     PARTIALS.map(p => {
@@ -284,7 +285,11 @@ async function refreshPreview() {
         <td class="${centsClass(c)}">${c === null ? "—" : (c > 0 ? "+" : "") + fmt(c, 1)}</td>
         <td class="${st === "达标" ? "ok" : st === "越界" ? "bad" : ""}">${st}</td></tr>`;
     }).join("");
-  $("alerts").innerHTML =
+  const info = r.executed_total > 0
+    ? `<div class="info">ℹ 已执行 ${fmt(r.executed_total, 2)} mm（复测已确认），`
+      + `预览 = 最新实测 × 剩余深度 ${fmt(r.remaining.reduce((a, b) => a + b, 0), 2)} mm</div>`
+    : "";
+  $("alerts").innerHTML = info +
     r.errors.map(e => `<div class="err">⛔ ${e.msg}</div>`).join("") +
     r.warnings.map(w => `<div class="wrn">⚠ ${w.msg}</div>`).join("");
 }
@@ -374,7 +379,9 @@ function renderRounds(rounds) {
       const r = await api(`/api/plans/${state.planId}/rounds/${seq}/measure`, "POST",
                           { measured, confidence });
       const out = document.querySelector(`[data-mout="${seq}"]`);
-      out.innerHTML = "<br>更新后预测：" + PARTIALS.map(p =>
+      out.innerHTML = `<br>本轮新增去料 ${fmt(r.increment.reduce((a, b) => a + b, 0), 2)} mm`
+        + `（累计已执行 ${fmt(r.executed_total, 2)}，剩余 ${fmt(r.remaining_total, 2)} mm）`
+        + "<br>更新后预测：" + PARTIALS.map(p =>
         `${PLABEL[p].split(" ")[0]} ${fmt(r.predicted[p])}Hz` +
         (r.cents[p] !== null ? ` (${r.cents[p] > 0 ? "+" : ""}${fmt(r.cents[p], 1)}音分)` : "")
       ).join("；") + `<br>标定α已更新：${PARTIALS.map(p => fmt(r.alphas[p], 2)).join("/")}`;

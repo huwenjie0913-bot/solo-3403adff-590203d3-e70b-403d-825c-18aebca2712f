@@ -35,6 +35,33 @@ def _targets(bell_id):
             for t in db.q("SELECT * FROM target WHERE bell_id=?", (bell_id,))}
 
 
+# ---------------------------------------------------- 累计/增量口径（统一）
+def _plan_executed(plan):
+    """已执行深度（累计）：最后一个已完成复测节点之前的所有车削轮次。
+    这些去料效果已包含在最新实测频率中，不得再次套用。"""
+    done_meas = [r["seq"] for r in plan["rounds"]
+                 if r["kind"] == "measure" and r["done"]]
+    limit = max(done_meas) if done_meas else -1
+    ex = np.zeros(len(plan["depths"]))
+    for r in plan["rounds"]:
+        if r["kind"] == "cut" and r["seq"] < limit:
+            ex += np.asarray(r["payload"]["depths"], float)
+    return ex
+
+
+def _plan_increment(plan, measure_seq):
+    """某复测节点对应的本轮新增深度（增量）：上一已完成复测节点之后、
+    本节点之前的车削轮次。切削记录与标定只应使用增量。"""
+    prev = [r["seq"] for r in plan["rounds"]
+            if r["kind"] == "measure" and r["done"] and r["seq"] < measure_seq]
+    lo = max(prev) if prev else -1
+    inc = np.zeros(len(plan["depths"]))
+    for r in plan["rounds"]:
+        if r["kind"] == "cut" and lo < r["seq"] < measure_seq:
+            inc += np.asarray(r["payload"]["depths"], float)
+    return inc
+
+
 def _json_err(msg, code=400):
     return jsonify(dict(error=msg)), code
 
@@ -141,18 +168,33 @@ def model(bid):
 
 @app.route("/api/bells/<int:bid>/preview", methods=["POST"])
 def preview(bid):
-    """拖动切削量的即时预览：{depths:[...]}"""
+    """
+    拖动切削量的即时预览：{depths:[...], plan_id:?}
+    口径：depths 为方案累计深度；预测基频为最新实测频率，因此只套用
+    剩余深度 = depths − 已执行深度（已执行部分的效果已含在实测值中）。
+    壁厚等硬约束仍按累计深度检查。
+    """
     m = _model(bid)
     if not m or m["S"] is None:
         return _json_err("model unavailable")
     d = request.get_json(force=True)
     depths = np.asarray(d.get("depths", [0] * len(m["bands"])), float)
-    pred = ph.predict(m["freqs"], m["S"], m["alphas"], depths)
+    executed = np.zeros(len(m["bands"]))
+    plan_id = d.get("plan_id")
+    if plan_id:
+        plan = db.plan_full(int(plan_id))
+        if plan and plan["bell_id"] == bid:
+            executed = _plan_executed(plan)
+    remaining = np.maximum(depths - executed, 0.0)
+    pred = ph.predict(m["freqs"], m["S"], m["alphas"], remaining)
     targets = _targets(bid)
-    errors, warnings = ph.check_plan(m["bands"], depths, pred, targets,
-                                     m["bell"]["min_thick"])
+    errors, warnings = ph.check_plan(m["bands"], depths, m["freqs"], pred,
+                                     targets, m["bell"]["min_thick"])
     out = dict(predicted={p: (round(v, 3) if v else None) for p, v in pred.items()},
-               errors=errors, warnings=warnings, partials={})
+               errors=errors, warnings=warnings, partials={},
+               executed=executed.round(3).tolist(),
+               remaining=remaining.round(3).tolist(),
+               executed_total=round(float(executed.sum()), 3))
     for p in ph.PARTIALS:
         t = targets.get(p)
         out["partials"][p] = dict(
@@ -233,7 +275,8 @@ def gen_rounds(pid):
 def measure_round(pid, seq):
     """
     录入某复测节点的实测频率 {measured:{partial:Hz}, confidence}。
-    写入测量、生成切削记录用于标定，并返回更新后的后续预测。
+    口径：切削记录只保存本轮新增深度（增量），before 为上一节点实测；
+    后续预测 = 最新实测 × 剩余深度（方案总量 − 已执行累计）。
     """
     p = db.plan_full(pid)
     if not p:
@@ -245,32 +288,31 @@ def measure_round(pid, seq):
         return _json_err("no measured data")
     conf = float(d.get("confidence", 0.7))
     bid = p["bell_id"]
-    # 该节点之前的累计切削
-    done_depths = np.zeros(len(p["depths"]))
-    for r in p["rounds"]:
-        if r["seq"] < seq and r["kind"] == "cut":
-            done_depths += np.asarray(r["payload"]["depths"], float)
-    before, _ = db.latest_freqs(bid)
+    before, _ = db.latest_freqs(bid)        # 上一节点（或原始）实测
+    inc = _plan_increment(p, seq)           # 本轮新增深度（增量）
     db.execute("UPDATE round SET payload=?, done=1 WHERE plan_id=? AND seq=?",
                (json.dumps(dict(round=(seq // 2) + 1, measured=measured)), pid, seq))
     for k, v in measured.items():
         db.execute("INSERT INTO measurement(bell_id, round_tag, partial, freq,"
                    " confidence, created) VALUES (?,?,?,?,?,?)",
                    (bid, f"plan{pid}-r{seq}", k, v, conf, db.now()))
-    if np.any(done_depths > 0) and before:
+    if np.any(inc > 1e-9) and before:
         db.execute("INSERT INTO cut_record(bell_id, plan_id, round_seq, depths,"
                    " before, after, confidence, created) VALUES (?,?,?,?,?,?,?,?)",
-                   (bid, pid, seq, json.dumps(done_depths.round(4).tolist()),
+                   (bid, pid, seq, json.dumps(inc.round(4).tolist()),
                     json.dumps(before), json.dumps(measured), conf, db.now()))
-    # 更新后续预测
-    m = _model(bid)
-    remaining = np.asarray(p["depths"], float) - done_depths
-    pred = ph.predict(measured if len(measured) == len(ph.PARTIALS)
-                      else {**m["freqs"], **measured},
-                      m["S"], m["alphas"], np.maximum(remaining, 0))
+    # 更新后续预测：最新实测 × 剩余深度
+    p2 = db.plan_full(pid)
+    m = _model(bid)                          # 含新切削记录，α 已重标定
+    executed = _plan_executed(p2)
+    remaining = np.maximum(np.asarray(p2["depths"], float) - executed, 0.0)
+    pred = ph.predict(m["freqs"], m["S"], m["alphas"], remaining)
     targets = _targets(bid)
     return jsonify(dict(
         ok=True, alphas=m["alphas"], calinfo=m["calinfo"],
+        increment=inc.round(3).tolist(),
+        executed_total=round(float(executed.sum()), 3),
+        remaining_total=round(float(remaining.sum()), 3),
         predicted={k: (round(v, 3) if v else None) for k, v in pred.items()},
         cents={k: (ph.cents(v, targets[k]["freq"]) if (k in targets and v) else None)
                for k, v in pred.items()}))
@@ -292,8 +334,8 @@ def compare(bid):
             return _json_err(f"plan {pid} not found", 404)
         depths = np.asarray(p["depths"], float)
         pred = ph.predict(m["freqs"], m["S"], m["alphas"], depths)
-        errors, warnings = ph.check_plan(m["bands"], depths, pred, targets,
-                                         m["bell"]["min_thick"])
+        errors, warnings = ph.check_plan(m["bands"], depths, m["freqs"], pred,
+                                         targets, m["bell"]["min_thick"])
         ds_arr = np.array([bd["ds"] for bd in m["bands"]])
         total_removal = round(float((depths * ds_arr).sum()) / 1000.0, 2)
         out.append(dict(

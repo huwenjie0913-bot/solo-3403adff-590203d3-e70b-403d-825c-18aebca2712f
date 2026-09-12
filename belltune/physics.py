@@ -206,11 +206,17 @@ def cents(f, f_ref):
 
 
 # ---------------------------------------------------------------- 检查
-def check_plan(bands, depths, freqs_pred, targets, min_thick, order_guard=0.0):
+def check_plan(bands, depths, freqs0, freqs_pred, targets, min_thick,
+               order_guard=0.0):
     """
     返回 (errors, warnings)。
-    errors: 壁厚不足等硬约束；warnings: 振型次序交叉、耦合越界等。
-    targets: {partial: {freq, tol_cents}}
+    errors: 壁厚不足等硬约束（按累计去料深度检查）。
+    warnings:
+      order     —— 振型次序交叉；
+      coupling  —— 联动越界：某分音向目标改善，同时另一分音被拖出容差
+                  （新越界或越界加剧）；
+      deviation —— 无改善联动时，方案本身把某分音推出容差。
+    freqs0 为当前（切削前）频率，freqs_pred 为方案预测频率。
     """
     errors, warnings = [], []
     d = np.asarray(depths, float)
@@ -228,20 +234,43 @@ def check_plan(bands, depths, freqs_pred, targets, min_thick, order_guard=0.0):
                 warnings.append(dict(
                     type="order",
                     msg=f"振型次序交叉风险：{PARTIAL_LABEL[PARTIALS[i]]} "
-                        f"({seq[i]:.2f} Hz) 与 {PARTIAL_LABEL[PARTIALS[i+1]]} "
-                        f"({seq[i+1]:.2f} Hz) 间距异常"))
-    # 耦合：某分音改善的同时其他分音越界
+                        f" ({seq[i]:.2f} Hz) 与 {PARTIAL_LABEL[PARTIALS[i+1]]}"
+                        f" ({seq[i + 1]:.2f} Hz) 间距异常"))
+    # 偏差前后对比
+    dev0, dev1, tol = {}, {}, {}
     for p in PARTIALS:
         t = targets.get(p)
-        fp = freqs_pred.get(p)
-        if not t or fp is None:
+        if not t:
             continue
-        dev = cents(fp, t["freq"])
-        if dev is not None and abs(dev) > t.get("tol_cents", 10.0):
+        tol[p] = t.get("tol_cents", 10.0)
+        c0 = cents(freqs0.get(p), t["freq"]) if freqs0.get(p) else None
+        c1 = cents(freqs_pred.get(p), t["freq"]) if freqs_pred.get(p) else None
+        if c0 is not None:
+            dev0[p] = c0
+        if c1 is not None:
+            dev1[p] = c1
+    improved = [p for p in dev1
+                if p in dev0 and abs(dev1[p]) < abs(dev0[p]) - 1e-6]
+    for p in PARTIALS:
+        if p not in dev0 or p not in dev1:
+            continue
+        tp = tol[p]
+        newly_out = abs(dev0[p]) <= tp < abs(dev1[p])
+        worse_out = abs(dev0[p]) > tp and abs(dev1[p]) > abs(dev0[p]) + 1e-6
+        if not (newly_out or worse_out):
+            continue
+        if improved:
             warnings.append(dict(
-                type="coupling", partial=p, dev_cents=dev,
-                msg=f"{PARTIAL_LABEL[p]} 预测偏差 {dev:+.1f} 音分，"
-                    f"超出容差 ±{t.get('tol_cents', 10.0):.0f} 音分"))
+                type="coupling", partial=p, dev_cents=dev1[p],
+                msg=(f"联动越界：{PARTIAL_LABEL[p]} 由 {dev0[p]:+.1f} 变为 "
+                     f"{dev1[p]:+.1f} 音分（容差 ±{tp:.0f}）—— "
+                     f"{'、'.join(PARTIAL_LABEL[q] for q in improved)} "
+                     f"改善的联动副作用")))
+        else:
+            warnings.append(dict(
+                type="deviation", partial=p, dev_cents=dev1[p],
+                msg=(f"{PARTIAL_LABEL[p]} 被方案推出容差：{dev0[p]:+.1f} → "
+                     f"{dev1[p]:+.1f} 音分（容差 ±{tp:.0f}）")))
     return errors, warnings
 
 
